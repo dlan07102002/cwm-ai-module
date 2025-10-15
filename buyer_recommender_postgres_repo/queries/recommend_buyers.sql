@@ -12,8 +12,11 @@ SELECT
 FROM
     public.bs_pre_order p
 WHERE
+    -- Only consider pending pre-orders
+    p.status = 'pending'
+AND
     -- Match brand if specified, otherwise consider all brands
-    (:brand IS NULL OR p.brand = :brand)
+    (:brand IS NULL OR p.brand = :brand OR similarity(:brand, p.brand) > 0.5)
 AND
     (:model IS NULL OR p.model = :model)
 AND

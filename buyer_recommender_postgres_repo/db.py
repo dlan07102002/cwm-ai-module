@@ -21,7 +21,7 @@ def get_db_url_from_env():
 
 def create_engine_from_env() -> Engine:
     db_url = get_db_url_from_env()
-    engine = create_engine(db_url, poolclass=QueuePool, pool_pre_ping=True)
+    engine = create_engine(db_url, poolclass=QueuePool,  connect_args={"client_encoding": "utf8"}, pool_pre_ping=True)
     return engine
 
 # Helper to run query and return DataFrame
