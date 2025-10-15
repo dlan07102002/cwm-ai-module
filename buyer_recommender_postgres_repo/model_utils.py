@@ -130,7 +130,7 @@ def build_features_from_candidates(df: pd.DataFrame) -> pd.DataFrame:
         if uid in user_profiles:
             sim = np.dot(user_profiles[uid], veh_vec)
         else:
-            sim = 0.0
+            sim =  0.5 # fallback similarity for unknown users
         profile_sims.append(sim)
     features['profile_similarity'] = profile_sims
 

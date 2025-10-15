@@ -11,3 +11,4 @@ psycopg2-binary
 lightgbm
 pyarrow
 python-dotenv
+sentence_transformers

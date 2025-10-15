@@ -5,16 +5,15 @@ SELECT
     p.model AS pre_model,
     p.year AS pre_year,
     p.price_min,
-    p.price_max,
-    NULL::varchar AS pre_location,
-    v.vehicle_id::text AS vehicle_id,
-    v.brand AS veh_brand,
-    v.model AS veh_model,
-    v.year AS veh_year,
-    v.price,
-    NULL::varchar AS veh_location,
-    p.matched_vehicle_id::text AS matched_vehicle_id
-FROM public.bs_pre_order p
+           p.price_max,
+           p.location AS pre_location,
+           v.vehicle_id::text AS vehicle_id,
+           v.brand AS veh_brand,
+           v.model AS veh_model,
+           v.year AS veh_year,
+           v.price,
+           v.location AS veh_location,
+           p.matched_vehicle_id::text AS matched_vehicle_idFROM public.bs_pre_order p
 CROSS JOIN LATERAL (
     SELECT v.*
     FROM public.bs_vehicle v

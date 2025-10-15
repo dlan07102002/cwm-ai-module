@@ -89,7 +89,7 @@ def recommend_buyers_for_vehicle(v: VehicleRequest, request: Request, top_n: int
 
     # Score candidates
     features = build_features_from_candidates(candidates)
-    # Use predict_proba to get a probability score (0.0 to 1.0) for the 'matched' class
+    # Use predict to get a probability score (0.0 to 1.0) for the 'matched' class
     scores = request.app.state.model.predict(features)
     candidates['score'] = scores
 

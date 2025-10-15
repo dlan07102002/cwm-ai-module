@@ -53,7 +53,8 @@ def run_training(
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
     user_train, user_test = user_ids[train_idx], user_ids[test_idx]
-
+    print("Feature means:", X_train.mean())
+    print("Feature stds:", X_train.std())
     # Group info for train/val
     group_train = user_train.value_counts(sort=False).sort_index().to_list()
     group_test = user_test.value_counts(sort=False).sort_index().to_list()
