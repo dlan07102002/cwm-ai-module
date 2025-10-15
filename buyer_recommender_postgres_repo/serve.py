@@ -1,12 +1,23 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import joblib, os
+import os
+from pathlib import Path
+from typing import List
+
+import joblib
 import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from db import create_engine_from_env, query_to_df
 from model_utils import build_features_from_candidates
 
-app = FastAPI(title='Buyer Recommendation - Postgres')
+# --- Constants ---
+MODEL_PATH = "model.joblib"
+CANDIDATE_LIMIT = 1000
+SQL_QUERY_DIR = Path(__file__).parent / "queries"
 
+# --- FastAPI App Initialization ---
+app = FastAPI(title="Buyer Recommendation - Postgres")
+
+# --- Pydantic Models for API ---
 class VehicleRequest(BaseModel):
     brand: str = None
     model: str = None
@@ -14,41 +25,75 @@ class VehicleRequest(BaseModel):
     location: str = None
     year: int = None
 
-@app.on_event('startup')
-def startup():
-    global model, engine
-    if not os.path.exists('model.joblib'):
-        raise RuntimeError('model.joblib not found. Run training first.')
-    model = joblib.load('model.joblib')
-    engine = create_engine_from_env()
+class Recommendation(BaseModel):
+    pre_order_id: str
+    user_id: str
+    score: float
 
-@app.post('/recommend_buyers_for_vehicle')
-def recommend_buyers_for_vehicle(v: VehicleRequest, top_n: int = 10):
-    # Candidate SQL: find pre_orders that could match this vehicle
-    sql = """
-    SELECT  p.pre_order_id, p.user_id, p.brand AS pre_brand, p.model AS pre_model, p.year AS pre_year,
-            p.price_min, p.price_max, NULL::varchar AS pre_location, p.matched_vehicle_id
-    FROM public.bs_pre_order p
-    WHERE (p.brand IS NULL OR p.brand = :brand)
-            AND (p.model IS NULL OR p.model = :model)
-            AND ( (:price IS NULL) OR (p.price_min IS NULL OR p.price_max IS NULL OR (:price BETWEEN p.price_min AND p.price_max)) )
-    LIMIT 1000
-    """
-    params = {'brand': v.brand, 'model': v.model, 'price': v.price}
+# --- Helper Functions ---
+def get_sql(name: str) -> str:
+    """Reads an SQL query from the 'queries' directory."""
+    query_path = SQL_QUERY_DIR / f"{name}.sql"
     try:
-        candidates = query_to_df(engine, sql, params=params)
+        with open(query_path, "r") as f:
+            return f.read()
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Query file not found at {query_path}") from e
+
+# --- Application Events ---
+@app.on_event("startup")
+def startup():
+    """Load resources on startup: ML model and database engine."""
+    if not os.path.exists(MODEL_PATH):
+        raise RuntimeError(f"{MODEL_PATH} not found. Run training first.")
+    
+    # For production, consider using an async DB driver (e.g., asyncpg)
+    # to avoid blocking the event loop.
+    app.state.engine = create_engine_from_env()
+    app.state.model = joblib.load(MODEL_PATH)
+    print("Application startup complete. Model and DB engine loaded.")
+
+# --- API Endpoint ---
+@app.post("/recommend_buyers_for_vehicle", response_model=List[Recommendation])
+def recommend_buyers_for_vehicle(v: VehicleRequest, request: Request, top_n: int = 10):
+    """
+    Recommends potential buyers for a given vehicle.
+
+    1.  Finds candidate pre-orders from the database.
+    2.  Scores candidates using a pre-trained ML model.
+    3.  Returns the top N recommendations.
+    """
+    sql = get_sql("recommend_buyers")
+    params = {
+        'brand': v.brand,
+        'model': v.model,
+        'price': v.price,
+        'limit': CANDIDATE_LIMIT
+    }
+
+    try:
+        candidates = query_to_df(request.app.state.engine, sql, params=params)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    if len(candidates) == 0:
+        # In a real app, log the error properly.
+        print(f"Database query failed: {e}")
+        raise HTTPException(status_code=500, detail="Error querying the database.")
+
+    if candidates.empty:
         return []
-    # attach vehicle columns
+
+    # Attach vehicle data to candidates for feature engineering
     candidates['veh_brand'] = v.brand
     candidates['veh_model'] = v.model
     candidates['price'] = v.price
     candidates['veh_location'] = v.location
     candidates['veh_year'] = v.year
-    feats = build_features_from_candidates(candidates)
-    scores = model.predict(feats)
+
+    # Score candidates
+    features = build_features_from_candidates(candidates)
+    scores = request.app.state.model.predict_proba(features)[:, 1] # Assuming binary classification
     candidates['score'] = scores
-    top = candidates.sort_values('score', ascending=False).head(top_n)
-    return top[['pre_order_id','user_id','score']].to_dict(orient='records')
+
+    # Get top N results
+    top_results = candidates.sort_values('score', ascending=False).head(top_n)
+
+    return top_results[['pre_order_id', 'user_id', 'score']].to_dict(orient='records')

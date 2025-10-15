@@ -9,3 +9,5 @@ joblib
 numpy
 psycopg2-binary
 lightgbm
+pyarrow
+python-dotenv

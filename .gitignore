@@ -1,3 +1,6 @@
 # Môi trường ảo Python
 venv/
 .env
+__pycache__
+*.parquet
+model.joblib
