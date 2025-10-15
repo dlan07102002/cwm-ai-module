@@ -1,8 +1,15 @@
+from dotenv import load_dotenv
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import QueuePool
 from urllib.parse import quote_plus
+from pathlib import Path
+
+# path to parent-level .env
+dotenv_path = Path(__file__).resolve().parent.parent / '.env'
+print("PATH ", dotenv_path)
+load_dotenv(dotenv_path)
 
 def get_db_url_from_env():
     host = os.getenv('DB_HOST','localhost')

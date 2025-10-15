@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 
 def build_features_from_candidates(df):
+    for col in ['price_min', 'price_max', 'price', 'pre_year', 'veh_year']:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
+    
     # df expected to have columns: pre_brand, pre_model, pre_year, price_min, price_max, pre_location,
     # veh_brand, veh_model, veh_year, price, veh_location
     X = pd.DataFrame()
