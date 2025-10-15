@@ -1,68 +1,109 @@
 import numpy as np
 import pandas as pd
+import numpy as np
+import pandas as pd
+from sentence_transformers import SentenceTransformer
 
-# Define column constants for clarity and maintainability
+# =============================
+# Constants
+# =============================
 NUMERIC_COLS = ['price_min', 'price_max', 'price', 'pre_year', 'veh_year']
+
 FINAL_FEATURE_COLS = [
     'brand_match', 'model_match', 'within_budget', 'price_diff_abs',
-    'year_diff', 'same_location', 'user_verify_score', 'bubble_score'
+    'year_diff', 'same_location', 'user_verify_score', 'bubble_score',
+    'text_similarity', 'profile_similarity'
 ]
 
+# =============================
+# Global Model Initialization
+# =============================
+# Load once (fast and memory efficient)
+_sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+
+# =============================
+# Helper Functions
+# =============================
+def compute_text_embeddings(texts):
+    """Compute normalized Sentence-BERT embeddings for a list of texts."""
+    embeddings = _sbert_model.encode(
+        [t if isinstance(t, str) else "" for t in texts],
+        normalize_embeddings=True
+    )
+    return embeddings
+
+
+def cosine_similarity(vec_a, vec_b):
+    """Compute cosine similarity between two sets of normalized vectors."""
+    return np.sum(vec_a * vec_b, axis=1)
+
+
+def build_user_profiles(df):
+    """
+    Build user profile embeddings from historically matched vehicles.
+    Returns a mapping {user_id: np.array(vector)}.
+    """
+    if "matched" in df.columns:
+        df_matched = df[df["matched"] == 1].copy()
+    else:
+        df_matched = df.copy()
+        
+    if df_matched.empty:
+        return {}
+
+    # Combine textual attributes
+    df_matched["veh_text"] = (
+        df_matched["veh_brand"].fillna('') + " " + df_matched["veh_model"].fillna('')
+    )
+    veh_emb = compute_text_embeddings(df_matched["veh_text"].tolist())
+    df_matched["veh_emb"] = list(veh_emb)
+
+    # Average embeddings per user
+    user_profiles = (
+        df_matched.groupby("user_id")["veh_emb"]
+        .apply(lambda x: np.mean(np.stack(x), axis=0))
+        .to_dict()
+    )
+    return user_profiles
+
+
+# =============================
+# Main Feature Builder
+# =============================
 def build_features_from_candidates(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Engineers features from a DataFrame of candidate pairs for a recommendation model.
-
-    This function takes a DataFrame of pre-order and vehicle data and creates
-    a feature set suitable for a machine learning model. It handles missing
-    values, performs type conversions, and creates several new features based
-    on the comparison between pre-orders and vehicles.
-
-    Args:
-        df: A pandas DataFrame with candidate data. Expected columns include:
-            pre_brand, pre_model, pre_year, price_min, price_max, pre_location,
-            veh_brand, veh_model, veh_year, price, veh_location.
-            Optional columns: user_verify_score, bubble_score.
-
-    Returns:
-        A new pandas DataFrame containing the engineered features in a specific order.
+    Engineers both traditional and AI-augmented features
+    from a DataFrame of candidate pairs.
     """
-    # 1. Initialization & Type Conversion
-    # Work on a copy to avoid modifying the original DataFrame
+
     data = df.copy()
 
+    # ---- Step 1: Type conversion ----
     for col in NUMERIC_COLS:
         if col in data.columns:
-            # Coerce errors will turn non-numeric values into NaT/NaN
             data[col] = pd.to_numeric(data[col], errors='coerce')
 
-    # 2. Feature Engineering
+    # ---- Step 2: Basic features ----
     features = {}
-
-    # Match features
     features['brand_match'] = (data['pre_brand'].fillna('') == data['veh_brand'].fillna('')).astype(int)
     features['model_match'] = (data['pre_model'].fillna('') == data['veh_model'].fillna('')).astype(int)
 
-    # Budget and price features
     price = data['price']
     price_min = data['price_min']
     price_max = data['price_max']
-    
+
     features['within_budget'] = (
         (price >= price_min.fillna(0)) & (price <= price_max.fillna(np.inf))
     ).astype(int)
-    
-    # Calculate the middle of the user's desired price range.
-    # If a bound is missing, use the vehicle's price as a substitute.
+
     price_mid = (price_min.fillna(price) + price_max.fillna(price)) / 2.0
     features['price_diff_abs'] = (price - price_mid).abs()
-
-    # Other numeric difference features
     features['year_diff'] = (data['veh_year'].fillna(0) - data['pre_year'].fillna(0)).abs()
+    features['same_location'] = (
+        data.get('pre_location', '').fillna('') == data.get('veh_location', '').fillna('')
+    ).astype(int)
 
-    # Location feature
-    features['same_location'] = (data.get('pre_location', '').fillna('') == data.get('veh_location', '').fillna('')).astype(int)
-
-    # Placeholder/optional features
     if 'user_verify_score' in df.columns:
         features['user_verify_score'] = df['user_verify_score'].fillna(0.0)
     else:
@@ -72,12 +113,33 @@ def build_features_from_candidates(df: pd.DataFrame) -> pd.DataFrame:
     else:
         features['bubble_score'] = 0.0
 
-    # 3. Final DataFrame construction
+    # ---- Step 3: Semantic Text Features ----
+    buyer_text = data['pre_brand'].fillna('') + " " + data['pre_model'].fillna('')
+    vehicle_text = data['veh_brand'].fillna('') + " " + data['veh_model'].fillna('')
+
+    buyer_emb = compute_text_embeddings(buyer_text.tolist())
+    vehicle_emb = compute_text_embeddings(vehicle_text.tolist())
+
+    features['text_similarity'] = cosine_similarity(buyer_emb, vehicle_emb)
+
+    # ---- Step 4: User Profile Similarity ----
+    # Build user profiles only once per dataset
+    user_profiles = build_user_profiles(data)
+    profile_sims = []
+    for uid, veh_vec in zip(data['user_id'], vehicle_emb):
+        if uid in user_profiles:
+            sim = np.dot(user_profiles[uid], veh_vec)
+        else:
+            sim = 0.0
+        profile_sims.append(sim)
+    features['profile_similarity'] = profile_sims
+
+    # ---- Step 5: Assemble Final Feature Frame ----
     X = pd.DataFrame(features)
 
-    # Ensure final feature set and order, filling missing features with 0.0
+    # Ensure correct order & fill missing
     for col in FINAL_FEATURE_COLS:
         if col not in X.columns:
             X[col] = 0.0
-            
+
     return X[FINAL_FEATURE_COLS]

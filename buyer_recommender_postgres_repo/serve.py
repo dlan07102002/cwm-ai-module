@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import List
 
 import joblib
-import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from db import create_engine_from_env, query_to_df
@@ -90,7 +89,8 @@ def recommend_buyers_for_vehicle(v: VehicleRequest, request: Request, top_n: int
 
     # Score candidates
     features = build_features_from_candidates(candidates)
-    scores = request.app.state.model.predict_proba(features)[:, 1] # Assuming binary classification
+    # Use predict_proba to get a probability score (0.0 to 1.0) for the 'matched' class
+    scores = request.app.state.model.predict(features)
     candidates['score'] = scores
 
     # Get top N results

@@ -8,7 +8,6 @@ from pathlib import Path
 
 # path to parent-level .env
 dotenv_path = Path(__file__).resolve().parent.parent / '.env'
-print("PATH ", dotenv_path)
 load_dotenv(dotenv_path)
 
 def get_db_url_from_env():
