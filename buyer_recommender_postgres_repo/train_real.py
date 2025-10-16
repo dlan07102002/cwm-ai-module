@@ -1,10 +1,9 @@
 import argparse
 import joblib
 import pandas as pd
-from lightgbm import LGBMRanker
 from sklearn.model_selection import train_test_split
 from typing import Dict, Any
-from lightgbm import early_stopping, log_evaluation
+from lightgbm import early_stopping, log_evaluation, LGBMRanker
 
 from model_utils import build_features_from_candidates
 
