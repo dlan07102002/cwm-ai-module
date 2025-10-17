@@ -6,10 +6,10 @@ import joblib
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from db import create_engine_from_env, query_to_df
-from model_utils import build_features_from_candidates
+from model_utils import build_features_from_candidates, build_user_profiles_proper
 
 # --- Constants ---
-MODEL_PATH = "models/lgbm_ranker.joblib"
+MODEL_PATH = "model.joblib"
 CANDIDATE_LIMIT = 1000
 SQL_QUERY_DIR = Path(__file__).parent / "queries"
 
@@ -50,6 +50,17 @@ def startup():
     # to avoid blocking the event loop.
     app.state.engine = create_engine_from_env()
     app.state.model = joblib.load(MODEL_PATH)
+
+    # Load historical matches for user profile creation
+    try:
+        historical_sql = get_sql("historical_matches")
+        historical_matches_df = query_to_df(app.state.engine, historical_sql)
+        app.state.user_profiles = build_user_profiles_proper(historical_matches_df)
+    except Exception as e:
+        # This is a non-critical error, so we can log it and continue
+        print(f"Could not load historical matches for user profiles: {e}")
+        app.state.user_profiles = {}
+
     print("Application startup complete. Model and DB engine loaded.")
 
 # --- API Endpoint ---
@@ -88,7 +99,7 @@ def recommend_buyers_for_vehicle(v: VehicleRequest, request: Request, top_n: int
     candidates['veh_year'] = v.year
 
     # Score candidates
-    features = build_features_from_candidates(candidates)
+    features = build_features_from_candidates(candidates, user_profiles=request.app.state.user_profiles)
     # Use predict to get a probability score (0.0 to 1.0) for the 'matched' class
     scores = request.app.state.model.predict(features)
     candidates['score'] = scores

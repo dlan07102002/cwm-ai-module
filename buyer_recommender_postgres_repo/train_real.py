@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 from typing import Dict, Any
 from lightgbm import early_stopping, log_evaluation, LGBMRanker
 
-from model_utils import build_features_from_candidates
+from model_utils import build_features_from_candidates, build_user_profiles_proper
 
 # --- Constants ---
 DEFAULT_TRAIN_PATH = 'data/train.parquet'
@@ -41,12 +41,13 @@ def run_training(
 
     # --- Feature Engineering: build features separately using historical matches only ---
     print("Building features for train set (no leakage)...")
-    X_train = build_features_from_candidates(train_df, historical_matches=historical_matches)
+    user_profiles = build_user_profiles_proper(historical_matches)
+    X_train = build_features_from_candidates(train_df, user_profiles=user_profiles)
     y_train = train_df['matched'].astype(int)
     user_train = train_df['user_id']
 
     print("Building features for test set (profiles built from train historical matches only)...")
-    X_test = build_features_from_candidates(test_df, historical_matches=historical_matches)
+    X_test = build_features_from_candidates(test_df, user_profiles=user_profiles)
     y_test = test_df['matched'].astype(int)
     user_test = test_df['user_id']
 
