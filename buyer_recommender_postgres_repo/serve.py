@@ -9,7 +9,7 @@ from db import create_engine_from_env, query_to_df
 from model_utils import build_features_from_candidates
 
 # --- Constants ---
-MODEL_PATH = "model.joblib"
+MODEL_PATH = "models/lgbm_ranker.joblib"
 CANDIDATE_LIMIT = 1000
 SQL_QUERY_DIR = Path(__file__).parent / "queries"
 
