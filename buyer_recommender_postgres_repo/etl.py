@@ -41,7 +41,10 @@ def build_candidate_table(engine: Engine, limit: int = DEFAULT_LIMIT) -> pd.Data
 def label_candidates(df: pd.DataFrame) -> pd.DataFrame:
     """Adds the 'matched' label to the DataFrame."""
     # label matched = 1 if matched_vehicle_id == vehicle_id
-    df['matched'] = (df['matched_vehicle_id'].astype(str) == df['vehicle_id'].astype(str)).astype(int)
+    # Coerce to strings, but fill NA with distinct values to prevent NaN == NaN matching
+    s1 = df['matched_vehicle_id'].fillna('__na_1__').astype(str)
+    s2 = df['vehicle_id'].fillna('__na_2__').astype(str)
+    df['matched'] = (s1 == s2).astype(int)
     return df
 
 

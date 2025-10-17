@@ -25,38 +25,37 @@ def run_training(
     df = pd.read_parquet(parquet_path)
     print(f"Loaded {len(df)} rows.")
 
-    # --- Feature Engineering ---
-    print("Building features...")
-    X = build_features_from_candidates(df)
-    y = df['matched'].astype(int)
-    user_ids = df['user_id']
-
-    # --- Sort by user to keep groups contiguous ---
-    df_sorted = df.sort_values('user_id').reset_index(drop=True)
-    X = X.loc[df_sorted.index]
-    y = y.loc[df_sorted.index]
-    user_ids = user_ids.loc[df_sorted.index]
-
-    # --- Compute group sizes ---
-    group_sizes = user_ids.value_counts(sort=False).sort_index().to_list()
-    print(f"Number of groups (buyers): {len(group_sizes)}")
-
-    # --- Split Train/Test ---
-    # Optional: split by unique users to prevent leakage
-    unique_users = user_ids.unique()
+    # --- Split Train/Test by user to prevent leakage ---
+    unique_users = df['user_id'].unique()
     train_users, test_users = train_test_split(unique_users, test_size=test_size, random_state=RANDOM_STATE)
 
-    train_idx = user_ids.isin(train_users)
-    test_idx = user_ids.isin(test_users)
+    train_df = df[df['user_id'].isin(train_users)]
+    test_df  = df[df['user_id'].isin(test_users)]
 
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
-    user_train, user_test = user_ids[train_idx], user_ids[test_idx]
+    # --- Sort by user to keep groups contiguous for LGBMRanker ---
+    train_df = train_df.sort_values('user_id').reset_index(drop=True)
+    test_df = test_df.sort_values('user_id').reset_index(drop=True)
+
+    # --- Feature Engineering ---
+    print("Building features...")
+    # Build user profiles from only train matches to prevent leakage
+    historical_matches = train_df[train_df['matched'] == 1]
+
+    X_train = build_features_from_candidates(train_df, historical_matches=historical_matches)
+    X_test  = build_features_from_candidates(test_df, historical_matches=historical_matches)
+
+    y_train = train_df['matched'].astype(int)
+    y_test  = test_df['matched'].astype(int)
+
+    # --- Compute group sizes for ranking ---
+    # The dataframes are sorted by user_id, so groups are contiguous.
+    group_train = train_df.groupby('user_id', sort=False).size().to_list()
+    group_test = test_df.groupby('user_id', sort=False).size().to_list()
+    print(f"Number of groups (buyers) in train: {len(group_train)}")
+    print(f"Number of groups (buyers) in test: {len(group_test)}")
+
     print("Feature means:", X_train.mean())
     print("Feature stds:", X_train.std())
-    # Group info for train/val
-    group_train = user_train.value_counts(sort=False).sort_index().to_list()
-    group_test = user_test.value_counts(sort=False).sort_index().to_list()
 
     # --- Train Model ---
     print("Training LightGBM model (LGBMRanker, objective=lambdarank)...")

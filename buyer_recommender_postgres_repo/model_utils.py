@@ -63,7 +63,7 @@ def build_user_profiles(df):
 # =============================
 # Main Feature Builder
 # =============================
-def build_features_from_candidates(df: pd.DataFrame) -> pd.DataFrame:
+def build_features_from_candidates(df: pd.DataFrame, historical_matches: pd.DataFrame = None) -> pd.DataFrame:
     """
     Engineers features from a DataFrame of candidate pairs.
     Ignores location, bubble_score, and user_verify_score for now.
@@ -103,7 +103,11 @@ def build_features_from_candidates(df: pd.DataFrame) -> pd.DataFrame:
     features['text_similarity'] = cosine_similarity(buyer_emb, vehicle_emb)
 
     # ---- Step 4: User Profile Similarity ----
-    user_profiles = build_user_profiles(data)
+    # If historical_matches is provided, use it to build profiles to prevent leakage.
+    # Otherwise, fall back to the old method (leaky).
+    profile_source_df = historical_matches if historical_matches is not None else data
+    user_profiles = build_user_profiles(profile_source_df)
+
     profile_sims = []
     for uid, veh_vec in zip(data['user_id'], vehicle_emb):
         if uid in user_profiles:
