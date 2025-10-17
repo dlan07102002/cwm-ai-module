@@ -1,229 +1,144 @@
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from typing import Dict, Optional
-from datetime import datetime
+from typing import Dict, Any
 
-# =============================
+# ==============================================================
 # Constants
-# =============================
-NUMERIC_COLS = ['price_min', 'price_max', 'price', 'pre_year', 'veh_year', 
-                'mileage', 'bubble_score', 'user_verify_score']
+# ==============================================================
+NUMERIC_COLS = ['price_min', 'price_max', 'price', 'pre_year', 'veh_year']
 
 FINAL_FEATURE_COLS = [
-    'brand_match', 'model_match', 'within_budget', 'price_ratio',
-    'year_diff', 'text_similarity', 'profile_similarity',
-    'price_percentile_in_budget', 'budget_flexibility_score',
-    'pre_order_age_days', 'mileage_normalized', 'location_match',
-    'vehicle_popularity_score', 'user_credibility_score'
+    'brand_match',
+    'model_match',
+    'within_budget',
+    'price_diff_abs',
+    'year_diff',
+    'user_pref_sim',          # similarity to user profile (historical matches)
+    'user_verify_sim'         # similarity to user verification embedding
 ]
 
-# =============================
-# Global Model
-# =============================
-_sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
+# Load a lightweight model only once
+_embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
-# =============================
-# Helper Functions
-# =============================
-def compute_text_embeddings(texts):
-    """Compute normalized Sentence-BERT embeddings."""
-    embeddings = _sbert_model.encode(
-        [t if isinstance(t, str) else "" for t in texts],
-        normalize_embeddings=True
-    )
-    return embeddings
 
-def cosine_similarity(vec_a, vec_b):
-    """Compute cosine similarity between normalized vectors."""
-    return np.sum(vec_a * vec_b, axis=1)
+# ==============================================================
+# Helper functions
+# ==============================================================
+def safe_cosine_sim(v1: np.ndarray, v2: np.ndarray) -> float:
+    """Compute cosine similarity between two vectors safely."""
+    if v1 is None or v2 is None:
+        return 0.0
+    if np.linalg.norm(v1) == 0 or np.linalg.norm(v2) == 0:
+        return 0.0
+    return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
 
-def build_user_profiles_proper(df_historical: pd.DataFrame) -> Dict[str, np.ndarray]:
+
+# ==============================================================
+# User profile builder
+# ==============================================================
+def build_user_profiles_proper(historical_matches: pd.DataFrame, verify_emb_map: Dict[str, np.ndarray] = None) -> Dict[str, Dict[str, Any]]:
     """
-    Build user profiles from HISTORICAL data only (not from training set).
-    This should be called on a separate historical dataset to avoid leakage.
-    
-    Args:
-        df_historical: DataFrame with columns [user_id, veh_brand, veh_model]
-                       from past confirmed matches only.
-    
+    Builds user profiles based on their historically matched vehicles.
+    Adds verify_emb_map if available.
+
     Returns:
-        Dictionary mapping user_id to embedding vector
+        user_profiles: {
+            user_id: {
+                'mean_price': float,
+                'mean_year': float,
+                'pref_emb': np.ndarray,       # aggregated preference embedding
+                'verify_emb': np.ndarray      # from verify_emb_map if available
+            }
+        }
     """
-    if df_historical.empty:
-        return {}
-    
-    df_historical["veh_text"] = (
-        df_historical["veh_brand"].fillna('') + " " + 
-        df_historical["veh_model"].fillna('')
-    )
-    veh_emb = compute_text_embeddings(df_historical["veh_text"].tolist())
-    df_historical["veh_emb"] = list(veh_emb)
-    
-    # Average embeddings per user
-    user_profiles = (
-        df_historical.groupby("user_id")["veh_emb"]
-        .apply(lambda x: np.mean(np.stack(x), axis=0))
-        .to_dict()
-    )
+    user_profiles = {}
+    if historical_matches.empty:
+        print("[WARN] No historical matches found, returning empty profiles.")
+        return user_profiles
+
+    print(f"[INFO] Building user profiles for {historical_matches['user_id'].nunique()} users...")
+
+    # Example: assume we have textual columns like 'brand', 'model', 'description'
+    for user_id, group in historical_matches.groupby('user_id'):
+        profile = {}
+
+        # Numeric preferences
+        profile['mean_price'] = group['price'].mean() if 'price' in group else 0.0
+        profile['mean_year'] = group['veh_year'].mean() if 'veh_year' in group else 0.0
+
+        # Text preference (use brand + model + description)
+        text_parts = []
+        for col in ['brand', 'model', 'description']:
+            if col in group.columns:
+                text_parts.extend(group[col].astype(str).tolist())
+        text_blob = " ".join(text_parts).strip()
+        if text_blob:
+            profile['pref_emb'] = _embedder.encode(text_blob)
+        else:
+            profile['pref_emb'] = np.zeros(384, dtype=float)
+
+        # Verification embedding (optional)
+        profile['verify_emb'] = verify_emb_map.get(str(user_id)) if verify_emb_map else None
+
+        user_profiles[str(user_id)] = profile
+
+    print(f"[INFO] Built {len(user_profiles)} user profiles.")
     return user_profiles
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """Calculate distance in km between two lat/lon points."""
-    R = 6371  # Earth radius in km
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(a))
-    return R * c
 
-# =============================
-# Main Feature Builder
-# =============================
-def build_features_from_candidates(
-    df: pd.DataFrame,
-    user_profiles: Optional[Dict[str, np.ndarray]] = None,
-    current_date: Optional[datetime] = None
-) -> pd.DataFrame:
+# ==============================================================
+# Feature builder
+# ==============================================================
+def build_features_from_candidates(df: pd.DataFrame, user_profiles: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
     """
-    Engineers comprehensive features from candidate pairs.
-    
-    Args:
-        df: DataFrame with candidate pairs
-        user_profiles: Pre-built user profiles from historical data (to avoid leakage)
-        current_date: Reference date for computing recency features
-    
-    Returns:
-        DataFrame with engineered features
+    Given candidate buyer-vehicle pairs, compute features including:
+      - numeric comparisons (price diff, year diff)
+      - string matches (brand/model)
+      - similarity to user historical profile
+      - similarity to verify embedding (if exists)
     """
-    data = df.copy()
-    
-    if current_date is None:
-        current_date = datetime.now()
-    
-    # ---- Type conversion ----
-    for col in NUMERIC_COLS:
-        if col in data.columns:
-            data[col] = pd.to_numeric(data[col], errors='coerce')
-    
-    features = {}
-    
-    # ---- Basic Match Features ----
-    features['brand_match'] = (
-        data['pre_brand'].fillna('').str.lower() == 
-        data['veh_brand'].fillna('').str.lower()
-    ).astype(int)
-    
-    features['model_match'] = (
-        data['pre_model'].fillna('').str.lower() == 
-        data['veh_model'].fillna('').str.lower()
-    ).astype(int)
-    
-    # ---- Improved Price Features ----
-    price = data['price'].fillna(0)
-    price_min = data['price_min'].fillna(0)
-    price_max = data['price_max'].fillna(np.inf)
-    
-    features['within_budget'] = (
-        (price >= price_min) & (price <= price_max)
-    ).astype(int)
-    
-    # Price ratio (normalized by budget range)
-    budget_range = (price_max - price_min).replace(0, 1)
-    price_mid = (price_min + price_max) / 2.0
-    features['price_ratio'] = np.clip((price - price_mid) / budget_range, -2, 2)
-    
-    # Where does this price fall within buyer's budget? (0 to 1)
-    features['price_percentile_in_budget'] = np.clip(
-        (price - price_min) / budget_range, 0, 1
-    )
-    
-    # Budget flexibility (wider budget = more flexible buyer)
-    features['budget_flexibility_score'] = np.clip(
-        budget_range / price_mid, 0, 2
-    )
-    
-    # ---- Year Features ----
-    features['year_diff'] = (
-        data['veh_year'].fillna(0) - data['pre_year'].fillna(0)
-    ).abs()
-    
-    # ---- Recency Features ----
-    if 'pre_order_created_at' in data.columns:
-        pre_order_dates = pd.to_datetime(data['pre_order_created_at'], errors='coerce')
-        features['pre_order_age_days'] = (
-            current_date - pre_order_dates
-        ).dt.days.fillna(999)
-    else:
-        features['pre_order_age_days'] = 0
-    
-    # ---- Mileage Features ----
-    if 'mileage' in data.columns:
-        # Normalize by vehicle age
-        veh_age = current_date.year - data['veh_year'].fillna(current_date.year)
-        avg_mileage_per_year = data['mileage'].fillna(0) / veh_age.replace(0, 1)
-        features['mileage_normalized'] = np.clip(avg_mileage_per_year / 15000, 0, 3)
-    else:
-        features['mileage_normalized'] = 0
-    
-    # ---- Location Features ----
-    if all(col in data.columns for col in ['buyer_lat', 'buyer_lon', 'vehicle_lat', 'vehicle_lon']):
-        distances = haversine_distance(
-            data['buyer_lat'].fillna(0), data['buyer_lon'].fillna(0),
-            data['vehicle_lat'].fillna(0), data['vehicle_lon'].fillna(0)
-        )
-        # Convert to similarity score (closer = better)
-        features['location_match'] = np.exp(-distances / 50)  # 50km decay
-    else:
-        features['location_match'] = 0.5
-    
-    # ---- Semantic Text Features ----
-    buyer_text = (
-        data['pre_brand'].fillna('') + " " + data['pre_model'].fillna('')
-    )
-    vehicle_text = (
-        data['veh_brand'].fillna('') + " " + data['veh_model'].fillna('')
-    )
-    
-    buyer_emb = compute_text_embeddings(buyer_text.tolist())
-    vehicle_emb = compute_text_embeddings(vehicle_text.tolist())
-    
-    features['text_similarity'] = cosine_similarity(buyer_emb, vehicle_emb)
-    
-    # ---- User Profile Similarity (NO LEAKAGE) ----
-    if user_profiles is None:
-        # For cold start: use text similarity as fallback
-        features['profile_similarity'] = features['text_similarity']
-    else:
-        profile_sims = []
-        for uid, veh_vec in zip(data['user_id'], vehicle_emb):
-            if uid in user_profiles:
-                sim = np.dot(user_profiles[uid], veh_vec)
-            else:
-                # Cold start: blend text similarity with default
-                sim = 0.3 + 0.4 * features['text_similarity'][len(profile_sims)]
-            profile_sims.append(sim)
-        features['profile_similarity'] = profile_sims
-    
-    # ---- Vehicle Quality Signals ----
-    if 'bubble_score' in data.columns:
-        features['vehicle_popularity_score'] = data['bubble_score'].fillna(0) / 100.0
-    else:
-        features['vehicle_popularity_score'] = 0.5
-    
-    # ---- User Credibility ----
-    if 'user_verify_score' in data.columns:
-        features['user_credibility_score'] = data['user_verify_score'].fillna(0) / 100.0
-    else:
-        features['user_credibility_score'] = 0.5
-    
-    # ---- Assemble Final DataFrame ----
-    X = pd.DataFrame(features)
-    
-    # Ensure all expected columns exist
-    for col in FINAL_FEATURE_COLS:
-        if col not in X.columns:
-            X[col] = 0.0
-    
-    return X[FINAL_FEATURE_COLS]
+    features = []
+
+    for idx, row in df.iterrows():
+        user_id = str(row['user_id'])
+        prof = user_profiles.get(user_id, {})
+
+        # Basic matching
+        brand_match = int(str(row.get('pre_brand', '')).lower() == str(row.get('veh_brand', '')).lower())
+        model_match = int(str(row.get('pre_model', '')).lower() == str(row.get('veh_model', '')).lower())
+
+        # Numeric features
+        price_diff_abs = abs(float(row.get('price', 0)) - float(prof.get('mean_price', 0)))
+        year_diff = abs(float(row.get('veh_year', 0)) - float(prof.get('mean_year', 0)))
+
+        # Within budget
+        within_budget = 0
+        if 'price_min' in row and 'price_max' in row and 'price' in row:
+            try:
+                within_budget = int(row['price_min'] <= row['price'] <= row['price_max'])
+            except Exception:
+                within_budget = 0
+
+        # Text similarity (preference)
+        veh_text = " ".join([str(row.get('veh_brand', '')), str(row.get('veh_model', '')), str(row.get('veh_desc', ''))])
+        veh_emb = _embedder.encode(veh_text)
+        user_pref_emb = prof.get('pref_emb')
+        user_pref_sim = safe_cosine_sim(user_pref_emb, veh_emb)
+
+        # Verify similarity
+        verify_emb = prof.get('verify_emb')
+        user_verify_sim = safe_cosine_sim(verify_emb, veh_emb)
+
+        features.append([
+            brand_match,
+            model_match,
+            within_budget,
+            price_diff_abs,
+            year_diff,
+            user_pref_sim,
+            user_verify_sim
+        ])
+
+    feat_df = pd.DataFrame(features, columns=FINAL_FEATURE_COLS, index=df.index)
+    return feat_df

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime
 
 # =============================
@@ -84,6 +84,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 def build_features_from_candidates(
     df: pd.DataFrame,
     user_profiles: Optional[Dict[str, np.ndarray]] = None,
+    user_verify_emb_map: Optional[Dict[Any, np.ndarray]] = None,
     current_date: Optional[datetime] = None
 ) -> pd.DataFrame:
     """
