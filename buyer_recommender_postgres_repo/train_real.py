@@ -25,37 +25,45 @@ def run_training(
     df = pd.read_parquet(parquet_path)
     print(f"Loaded {len(df)} rows.")
 
-    # --- Split Train/Test by user to prevent leakage ---
+    # --- Split Train/Test by users FIRST to avoid leakage ---
+    print("Splitting users into train/test to avoid leakage...")
     unique_users = df['user_id'].unique()
     train_users, test_users = train_test_split(unique_users, test_size=test_size, random_state=RANDOM_STATE)
 
-    train_df = df[df['user_id'].isin(train_users)]
-    test_df  = df[df['user_id'].isin(test_users)]
+    train_df = df[df['user_id'].isin(train_users)].reset_index(drop=True)
+    test_df = df[df['user_id'].isin(test_users)].reset_index(drop=True)
+    print(f"Train users: {len(train_users)}, Test users: {len(test_users)}")
+    print(f"Train rows: {len(train_df)}, Test rows: {len(test_df)}")
 
-    # --- Sort by user to keep groups contiguous for LGBMRanker ---
-    train_df = train_df.sort_values('user_id').reset_index(drop=True)
-    test_df = test_df.sort_values('user_id').reset_index(drop=True)
+    # --- Build historical matches from train only (to compute user profiles) ---
+    historical_matches = train_df[train_df['matched'] == 1].reset_index(drop=True)
+    print(f"Historical (train) matched records used for profiles: {len(historical_matches)}")
 
-    # --- Feature Engineering ---
-    print("Building features...")
-    # Build user profiles from only train matches to prevent leakage
-    historical_matches = train_df[train_df['matched'] == 1]
-
+    # --- Feature Engineering: build features separately using historical matches only ---
+    print("Building features for train set (no leakage)...")
     X_train = build_features_from_candidates(train_df, historical_matches=historical_matches)
-    X_test  = build_features_from_candidates(test_df, historical_matches=historical_matches)
-
     y_train = train_df['matched'].astype(int)
-    y_test  = test_df['matched'].astype(int)
+    user_train = train_df['user_id']
 
-    # --- Compute group sizes for ranking ---
-    # The dataframes are sorted by user_id, so groups are contiguous.
-    group_train = train_df.groupby('user_id', sort=False).size().to_list()
-    group_test = test_df.groupby('user_id', sort=False).size().to_list()
-    print(f"Number of groups (buyers) in train: {len(group_train)}")
-    print(f"Number of groups (buyers) in test: {len(group_test)}")
+    print("Building features for test set (profiles built from train historical matches only)...")
+    X_test = build_features_from_candidates(test_df, historical_matches=historical_matches)
+    y_test = test_df['matched'].astype(int)
+    user_test = test_df['user_id']
 
-    print("Feature means:", X_train.mean())
-    print("Feature stds:", X_train.std())
+    # --- Print some basic stats ---
+    if not X_train.empty:
+        print("Feature means (train):", X_train.mean().to_dict())
+        print("Feature stds (train):", X_train.std().to_dict())
+
+    # --- Compute group sizes preserving the order of rows ---
+    # LightGBM expects group sizes to match the order of rows passed in.
+    def groups_from_ordered_user_series(user_series: pd.Series):
+        # user_series is aligned with X rows and in the order passed to fit
+        return user_series.groupby(user_series, sort=False).size().tolist()
+
+    group_train = groups_from_ordered_user_series(user_train)
+    group_test = groups_from_ordered_user_series(user_test)
+    print(f"Number of groups (train buyers): {len(group_train)}, (test buyers): {len(group_test)}")
 
     # --- Train Model ---
     print("Training LightGBM model (LGBMRanker, objective=lambdarank)...")
