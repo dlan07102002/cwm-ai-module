@@ -4,3 +4,4 @@ venv/
 __pycache__
 *.parquet
 model.joblib
+*.txt
